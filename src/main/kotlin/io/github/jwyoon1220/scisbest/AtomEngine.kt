@@ -68,6 +68,18 @@ class AtomEngine {
     private var lastFpsTime    = System.nanoTime()
     private var fps            = 0f
 
+    // ── Camera / viewport ────────────────────────────────────
+    // cameraOffset: world-space position of the bottom-left corner of the viewport
+    // cameraZoom:   how many times the world is magnified (1 = fit-to-window)
+    private var cameraZoom    = 1f
+    private var cameraOffsetX = 0f
+    private var cameraOffsetY = 0f
+
+    // Middle-mouse drag state
+    private var middleDragging = false
+    private var lastMiddleX    = 0.0
+    private var lastMiddleY    = 0.0
+
     // Stats read-back from GPU
     private var activeNeutrons = 0L
     private var totalFissions  = 0L
@@ -169,9 +181,6 @@ class AtomEngine {
         decayProgram    = ShaderUtils.computeProgram("shaders/decay.comp")
         neutronProgram  = ShaderUtils.renderProgram("shaders/neutron.vert", "shaders/neutron.frag")
         gridProgram     = ShaderUtils.renderProgram("shaders/grid.vert",    "shaders/grid.frag")
-
-        // Build orthographic projection: world [0..worldWidth, 0..worldHeight] → NDC
-        projMatrix.setOrtho(0f, worldWidth, 0f, worldHeight, -1f, 1f)
     }
 
     /** Place a basic reactor layout: water moderator + small U-235 core. */
@@ -261,13 +270,15 @@ class AtomEngine {
 
             glfwSwapBuffers(windowHandle)
 
-            // FPS calculation
+            // FPS calculation + window title update
             frameCount++
             val elapsed = now - lastFpsTime
             if (elapsed >= 1_000_000_000L) {
                 fps         = frameCount * 1_000_000_000f / elapsed
                 frameCount  = 0
                 lastFpsTime = now
+                glfwSetWindowTitle(windowHandle,
+                    "핵분열 시뮬레이터  |  FPS: %.0f  |  중성자: %,d".format(fps, activeNeutrons))
             }
         }
     }
@@ -314,6 +325,10 @@ class AtomEngine {
         glUseProgram(gridProgram)
         gridSSBO.bind()
         glUniform1i(glGetUniformLocation(gridProgram, "u_render_mode"), renderMode)
+        // Camera: pass UV-space offset and zoom so the vertex shader can pan/zoom the grid
+        glUniform2f(glGetUniformLocation(gridProgram, "u_cam_uv_offset"),
+            cameraOffsetX / worldWidth, cameraOffsetY / worldHeight)
+        glUniform1f(glGetUniformLocation(gridProgram, "u_cam_zoom"), cameraZoom)
         glBindVertexArray(dummyVao)
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
     }
@@ -323,14 +338,24 @@ class AtomEngine {
         glUseProgram(neutronProgram)
         neutronSSBO.bind()
 
-        // Upload projection matrix
+        // Rebuild orthographic projection from current camera state each frame.
+        // The visible world region is [offsetX .. offsetX+W/zoom, offsetY .. offsetY+H/zoom].
+        projMatrix.setOrtho(
+            cameraOffsetX,
+            cameraOffsetX + worldWidth  / cameraZoom,
+            cameraOffsetY,
+            cameraOffsetY + worldHeight / cameraZoom,
+            -1f, 1f
+        )
+
         val matBuf = memAllocFloat(16)
         projMatrix.get(matBuf)
         glUniformMatrix4fv(
             glGetUniformLocation(neutronProgram, "u_projection"), false, matBuf)
         memFree(matBuf)
 
-        glUniform1f(glGetUniformLocation(neutronProgram, "u_point_size"), 3f)
+        // Scale point size proportionally to zoom so neutrons remain visible
+        glUniform1f(glGetUniformLocation(neutronProgram, "u_point_size"), 3f * cameraZoom.coerceAtLeast(1f))
         glUniform1f(glGetUniformLocation(neutronProgram, "u_world_w"), worldWidth)
         glUniform1f(glGetUniformLocation(neutronProgram, "u_world_h"), worldHeight)
 
@@ -344,11 +369,56 @@ class AtomEngine {
     // ═══════════════════════════════════════════════════════════
 
     private fun drawImGui() {
+        handleViewportInput()
         drawPanelSimControl()
         drawPanelEnvironment()
         drawPanelAnalytics()
         drawDebugOverlay()
         drawTooltip()
+    }
+
+    // ── Viewport pan & zoom (mouse wheel + middle-button drag) ─
+    private fun handleViewportInput() {
+        // Scroll wheel zoom — works regardless of ImGui capture state so the
+        // simulation viewport can always be zoomed.
+        val scrollY = ImGui.getIO().mouseWheel
+        if (scrollY != 0f) {
+            val factor = if (scrollY > 0f) 1.1f else (1f / 1.1f)
+
+            // Get current cursor position and compute the world point under it.
+            // That point must remain fixed on screen after the zoom.
+            val mx = DoubleArray(1); val my = DoubleArray(1)
+            glfwGetCursorPos(windowHandle, mx, my)
+            val screenUvX = mx[0].toFloat() / windowWidth
+            val screenUvY = 1f - my[0].toFloat() / windowHeight
+            val wx = cameraOffsetX + screenUvX * (worldWidth  / cameraZoom)
+            val wy = cameraOffsetY + screenUvY * (worldHeight / cameraZoom)
+
+            cameraZoom = (cameraZoom * factor).coerceIn(0.1f, 20f)
+
+            // Recompute offset so the same world point sits under the cursor
+            cameraOffsetX = wx - screenUvX * (worldWidth  / cameraZoom)
+            cameraOffsetY = wy - screenUvY * (worldHeight / cameraZoom)
+        }
+
+        // Middle-mouse button drag for panning
+        val mx = DoubleArray(1); val my = DoubleArray(1)
+        glfwGetCursorPos(windowHandle, mx, my)
+        val midDown = glfwGetMouseButton(windowHandle, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS
+        if (midDown) {
+            if (middleDragging) {
+                // dx/dy in screen pixels; Y is flipped (screen Y-down, world Y-up)
+                val dx = (mx[0] - lastMiddleX).toFloat()
+                val dy = (my[0] - lastMiddleY).toFloat()
+                cameraOffsetX -= dx * (worldWidth  / cameraZoom) / windowWidth
+                cameraOffsetY += dy * (worldHeight / cameraZoom) / windowHeight
+            }
+            middleDragging = true
+        } else {
+            middleDragging = false
+        }
+        lastMiddleX = mx[0]
+        lastMiddleY = my[0]
     }
 
     // ── Panel 1: Simulation Control ──────────────────────────
@@ -514,9 +584,14 @@ class AtomEngine {
     private fun updateMouseWorldPos() {
         val mx = DoubleArray(1); val my = DoubleArray(1)
         glfwGetCursorPos(windowHandle, mx, my)
-        // Convert screen pixels → world units (Y is flipped)
-        mouseWorldX = (mx[0].toFloat() / windowWidth)  * worldWidth
-        mouseWorldY = (1f - my[0].toFloat() / windowHeight) * worldHeight
+        // Screen UV [0..1], Y flipped so that Y=0 is the bottom of the viewport
+        val screenUvX = mx[0].toFloat() / windowWidth
+        val screenUvY = 1f - my[0].toFloat() / windowHeight
+        // Inverse-project through camera: visible world region is
+        //   X: [cameraOffsetX .. cameraOffsetX + worldWidth/cameraZoom]
+        //   Y: [cameraOffsetY .. cameraOffsetY + worldHeight/cameraZoom]
+        mouseWorldX = cameraOffsetX + screenUvX * (worldWidth  / cameraZoom)
+        mouseWorldY = cameraOffsetY + screenUvY * (worldHeight / cameraZoom)
     }
 
     private fun isMouseOnGrid(): Boolean =
