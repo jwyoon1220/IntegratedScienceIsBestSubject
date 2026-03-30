@@ -89,6 +89,14 @@ class AtomEngine {
     private var mouseWorldX = 0f
     private var mouseWorldY = 0f
 
+    // ── 가이거 계수기 (오디오) ────────────────────────────────
+    private lateinit var geigerCounter: GeigerCounter
+    private var prevTotalFissions   = 0L   // 이전 프레임의 총 핵분열 수
+    private var frameFissions       = 0L   // 현재 프레임의 신규 핵분열 수
+
+    // 우클릭 상태 추적 (버튼-다운 에지 검출)
+    private var prevRightButtonDown = false
+
     // ── Projection matrix (JOML) ─────────────────────────────
     private val projMatrix = Matrix4f()
 
@@ -107,6 +115,7 @@ class AtomEngine {
         initSSBOs()
         initShaders()
         setupDefaultScene()
+        geigerCounter = GeigerCounter()
     }
 
     private fun initGlfw() {
@@ -122,7 +131,7 @@ class AtomEngine {
         glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE)
 
         windowHandle = glfwCreateWindow(windowWidth, windowHeight,
-            "⚛  Integrated Science Nuclear Fission Simulator", NULL, NULL)
+            "핵분열 시뮬레이터", NULL, NULL)
         check(windowHandle != NULL) { "Failed to create GLFW window" }
 
         // Center window
@@ -222,7 +231,7 @@ class AtomEngine {
 
             // ── Sub-step physics dispatch ─────────────────────
             if (!simPaused) {
-                val steps   = Math.ceil(timeScale.toDouble()).toInt().coerceAtLeast(1)
+                val steps   = kotlin.math.ceil(timeScale.toDouble()).toInt().coerceAtLeast(1)
                 val stepDt  = (1f / 60f) * (timeScale / steps.toFloat())
 
                 counterSSBO.updateSeed((now xor (now shr 32)).toInt())
@@ -245,6 +254,11 @@ class AtomEngine {
             totalFissions    = counters.totalFissions
             hoveredNeutronIdx = selectionSSBO.readHoveredIndex()
             selectionSSBO.reset()  // reset for next frame
+
+            // 가이거 계수기 — 신규 핵분열 이벤트에 따라 클릭 사운드 예약
+            frameFissions       = (totalFissions - prevTotalFissions).coerceAtLeast(0L)
+            prevTotalFissions   = totalFissions
+            geigerCounter.triggerFissions(frameFissions)
 
             // GPU timer (non-blocking, one frame latency)
             val timerAvail = IntArray(1)
@@ -419,67 +433,76 @@ class AtomEngine {
         }
         lastMiddleX = mx[0]
         lastMiddleY = my[0]
+
+        // 우클릭 — 마우스 위치에 중성자 생성 (버튼-다운 에지에서 1회 실행)
+        val rightDown = glfwGetMouseButton(windowHandle, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS
+        if (rightDown && !prevRightButtonDown && isMouseOnGrid() && !ImGui.getIO().wantCaptureMouse) {
+            spawnNeutronsAtPos(200, mouseWorldX, mouseWorldY)
+        }
+        prevRightButtonDown = rightDown
     }
 
     // ── Panel 1: Simulation Control ──────────────────────────
     private fun drawPanelSimControl() {
         ImGui.setNextWindowPos(10f, 10f, ImGuiCond.Once)
         ImGui.setNextWindowSize(300f, 200f, ImGuiCond.Once)
-        if (ImGui.begin("⚙ Simulation Control")) {
-            if (ImGui.button(if (simPaused) "▶ Resume" else "⏸ Pause", 120f, 0f)) {
+        if (ImGui.begin("시뮬레이션 제어")) {
+            if (ImGui.button(if (simPaused) "재개" else "일시정지", 120f, 0f)) {
                 simPaused = !simPaused
             }
             ImGui.sameLine()
-            if (ImGui.button("🗑 Clear All", 120f, 0f)) {
+            if (ImGui.button("전체 초기화", 120f, 0f)) {
                 // Neutron buffer is reset implicitly when counterSSBO is cleared:
                 // all neutron slots stay in memory; the GPU reads active_neutron_count = 0.
                 gridSSBO.clearAll()
                 counterSSBO.resetCounters()
+                prevTotalFissions = 0L
+                frameFissions     = 0L
                 setupDefaultScene()
             }
 
             val ts = floatArrayOf(timeScale)
-            if (ImGui.sliderFloat("Time Scale", ts, 0.1f, 100f, "%.1fx")) {
+            if (ImGui.sliderFloat("시간 배율", ts, 0.1f, 100f, "%.1fx")) {
                 timeScale = ts[0]
             }
 
-            val steps = Math.ceil(timeScale.toDouble()).toInt().coerceAtLeast(1)
-            ImGui.text("Sub-steps/frame: $steps")
-            ImGui.text("GPU Compute: %.2f ms".format(gpuTimeMs))
+            val steps = kotlin.math.ceil(timeScale.toDouble()).toInt().coerceAtLeast(1)
+            ImGui.text("프레임당 하위 스텝: $steps")
+            ImGui.text("GPU 연산: %.2f ms".format(gpuTimeMs))
         }
         ImGui.end()
     }
 
     // ── Panel 2: Environment Setup ───────────────────────────
-    private val brushLabels = arrayOf("U-235", "U-238", "Pu-239", "Control Rod", "Light Water", "Graphite", "Wall")
+    private val brushLabels = arrayOf("U-235", "U-238", "Pu-239", "제어봉", "경수", "흑연", "벽")
     private val brushStructureMap = intArrayOf(0, 0, 0, 4, 1, 3, 6)
 
     private fun drawPanelEnvironment() {
         ImGui.setNextWindowPos(10f, 220f, ImGuiCond.Once)
         ImGui.setNextWindowSize(300f, 260f, ImGuiCond.Once)
-        if (ImGui.begin("🏗 Environment Setup")) {
+        if (ImGui.begin("환경 설정")) {
             val bm = ImInt(brushMode)
-            if (ImGui.combo("Brush Mode", bm, brushLabels)) brushMode = bm.get()
+            if (ImGui.combo("브러시 모드", bm, brushLabels)) brushMode = bm.get()
 
             val br = intArrayOf(brushRadius)
-            if (ImGui.sliderInt("Brush Radius", br, 1, 30)) brushRadius = br[0]
+            if (ImGui.sliderInt("브러시 반경", br, 1, 30)) brushRadius = br[0]
 
             val bd = floatArrayOf(brushDensity)
-            if (ImGui.sliderFloat("Density (kg)", bd, 1f, 100f, "%.1f kg")) brushDensity = bd[0]
+            if (ImGui.sliderFloat("밀도 (kg)", bd, 1f, 100f, "%.1f kg")) brushDensity = bd[0]
 
             val cm = floatArrayOf(criticalMass)
-            if (ImGui.sliderFloat("Critical Mass Threshold", cm, 10f, 200f, "%.0f kg")) criticalMass = cm[0]
+            if (ImGui.sliderFloat("임계 질량 임계값", cm, 10f, 200f, "%.0f kg")) criticalMass = cm[0]
 
             ImGui.separator()
-            if (ImGui.button("⚡ Spawn 10k Neutrons", 240f, 0f)) {
+            if (ImGui.button("10,000 중성자 생성", 240f, 0f)) {
                 spawnNeutronsAtCenter(10_000)
             }
-            if (ImGui.button("💥 Spawn 100k Neutrons", 240f, 0f)) {
+            if (ImGui.button("100,000 중성자 생성", 240f, 0f)) {
                 spawnNeutronsAtCenter(100_000)
             }
 
             ImGui.separator()
-            ImGui.text("Left-click on grid to paint")
+            ImGui.text("좌클릭: 소재 칠하기   우클릭: 중성자 생성")
             if (isMouseOnGrid() && ImGui.isMouseDown(ImGuiMouseButton.Left) && !ImGui.getIO().wantCaptureMouse) {
                 paintBrush()
             }
@@ -488,16 +511,25 @@ class AtomEngine {
     }
 
     // ── Panel 3: Analytics & Sensors ────────────────────────
-    private val renderModeLabels = arrayOf("Particles (Material)", "Radiation Heatmap", "Temperature Heatmap")
+    private val renderModeLabels = arrayOf("입자 (소재)", "방사선 열지도", "온도 열지도")
 
     private fun drawPanelAnalytics() {
         ImGui.setNextWindowPos(10f, 490f, ImGuiCond.Once)
-        ImGui.setNextWindowSize(300f, 220f, ImGuiCond.Once)
-        if (ImGui.begin("📊 Analytics & Sensors")) {
-            ImGui.text("Active Neutrons:  %,d / %,d".format(activeNeutrons, NeutronSSBO.MAX_NEUTRONS_CONST))
+        ImGui.setNextWindowSize(300f, 250f, ImGuiCond.Once)
+        if (ImGui.begin("분석 및 센서")) {
+            ImGui.text("활성 중성자: %,d / %,d".format(activeNeutrons, NeutronSSBO.MAX_NEUTRONS_CONST))
             ImGui.progressBar(activeNeutrons.toFloat() / NeutronSSBO.MAX_NEUTRONS_CONST, 280f, 0f)
 
-            ImGui.text("Total Fissions:   %,d".format(totalFissions))
+            ImGui.text("총 핵분열:   %,d".format(totalFissions))
+
+            ImGui.separator()
+            // ── 가이거 계수기 ────────────────────────────────────
+            val audioStr = if (geigerCounter.isAudioAvailable) "활성" else "비활성 (오디오 장치 없음)"
+            ImGui.text("가이거 계수기: $audioStr")
+            ImGui.text("이번 프레임 핵분열: %,d".format(frameFissions))
+            // 핵분열 속도에 따른 시각적 강도 표시
+            val intensity = (frameFissions.toFloat() / 500f).coerceIn(0f, 1f)
+            ImGui.progressBar(intensity, 280f, 12f, "")
 
             ImGui.separator()
             val rm = intArrayOf(renderMode)
@@ -518,12 +550,12 @@ class AtomEngine {
                     ImGuiWindowFlags.NoNav or ImGuiWindowFlags.NoMove
         if (ImGui.begin("##Debug", flags)) {
             ImGui.text("FPS:        %.1f".format(fps))
-            ImGui.text("Frame time: %.2f ms".format(if (fps > 0) 1000f / fps else 0f))
-            ImGui.text("GPU time:   %.2f ms".format(gpuTimeMs))
-            ImGui.text("Neutrons:   %,d".format(activeNeutrons))
-            ImGui.text("Fissions:   %,d".format(totalFissions))
-            ImGui.text("Sim speed:  %.1fx (%d steps)".format(
-                timeScale, Math.ceil(timeScale.toDouble()).toInt()))
+            ImGui.text("프레임 시간: %.2f ms".format(if (fps > 0) 1000f / fps else 0f))
+            ImGui.text("GPU 시간:   %.2f ms".format(gpuTimeMs))
+            ImGui.text("중성자:     %,d".format(activeNeutrons))
+            ImGui.text("핵분열:     %,d".format(totalFissions))
+            ImGui.text("시뮬 속도: %.1fx (%d 스텝)".format(
+                timeScale, kotlin.math.ceil(timeScale.toDouble()).toInt()))
         }
         ImGui.end()
     }
@@ -537,30 +569,30 @@ class AtomEngine {
             val cell = gridSSBO.readCell(gcx, gcy)
 
             ImGui.beginTooltip()
-            ImGui.text("[Cell %d, %d]".format(gcx, gcy))
-            ImGui.text("Material: ${structureName(cell.structureType)}")
+            ImGui.text("[셀 %d, %d]".format(gcx, gcy))
+            ImGui.text("소재: ${structureName(cell.structureType)}")
 
-            val tempStr = if (cell.temperature > 2000f) "⚠ CRITICAL" else "%.1f °C".format(cell.temperature)
-            ImGui.text("Temperature: $tempStr")
+            val tempStr = if (cell.temperature > 2000f) "위험" else "%.1f °C".format(cell.temperature)
+            ImGui.text("온도: $tempStr")
 
             if (cell.u235  > 0f) ImGui.textColored(1f, 1f, 0f, 1f, "U-235:  %.2f kg".format(cell.u235))
             if (cell.u238  > 0f) ImGui.text("U-238:  %.2f kg".format(cell.u238))
             if (cell.pu239 > 0f) ImGui.textColored(1f, 0.5f, 0f, 1f, "Pu-239: %.2f kg".format(cell.pu239))
             if (cell.xe135 > 0.0001f) ImGui.textColored(0.8f, 0f, 0.8f, 1f,
                 "Xe-135: %.4f ppm".format(cell.xe135))
-            ImGui.text("Dose:   %.2f Sv/h".format(cell.radiationDose))
+            ImGui.text("방사선량: %.2f Sv/h".format(cell.radiationDose))
 
             // Neutron tooltip (GPU-picked)
             if (hoveredNeutronIdx >= 0) {
                 val n = neutronSSBO.readNeutron(hoveredNeutronIdx)
                 if (n != null) {
                     ImGui.separator()
-                    ImGui.text("[Neutron ID: #%d]".format(hoveredNeutronIdx))
-                    val state = if (n.energy >= 15f) "Fast ⚡" else "Thermal 🔴"
-                    ImGui.text("State:  $state")
-                    ImGui.text("Energy: %.2f MeV".format(n.energy))
-                    val speed = Math.sqrt((n.velX * n.velX + n.velY * n.velY).toDouble()).toFloat()
-                    ImGui.text("Speed:  %.2f  [vx: %.1f, vy: %.1f]".format(speed, n.velX, n.velY))
+                    ImGui.text("[중성자 ID: #%d]".format(hoveredNeutronIdx))
+                    val state = if (n.energy >= 15f) "고속" else "열중성자"
+                    ImGui.text("상태: $state")
+                    ImGui.text("에너지: %.2f MeV".format(n.energy))
+                    val speed = kotlin.math.sqrt((n.velX * n.velX + n.velY * n.velY).toDouble()).toFloat()
+                    ImGui.text("속도: %.2f  [vx: %.1f, vy: %.1f]".format(speed, n.velX, n.velY))
                 }
             }
             ImGui.endTooltip()
@@ -572,13 +604,13 @@ class AtomEngine {
     // ═══════════════════════════════════════════════════════════
 
     private fun structureName(t: Int) = when (t) {
-        1    -> "Light Water"
-        2    -> "Heavy Water"
-        3    -> "Graphite"
-        4    -> "Control Rod"
-        5    -> "Reflector"
-        6    -> "Wall"
-        else -> "Vacuum/Fuel"
+        1    -> "경수"
+        2    -> "중수"
+        3    -> "흑연"
+        4    -> "제어봉"
+        5    -> "반사체"
+        6    -> "벽"
+        else -> "진공/연료"
     }
 
     private fun updateMouseWorldPos() {
@@ -622,10 +654,14 @@ class AtomEngine {
     private fun spawnNeutronsAtCenter(count: Int) {
         val cx = worldWidth  / 2f
         val cy = worldHeight / 2f
+        spawnNeutronsAtPos(count, cx, cy)
+    }
+
+    private fun spawnNeutronsAtPos(count: Int, worldX: Float, worldY: Float) {
         // Current active count is the write offset (slots are reused by GPU)
         val offset = activeNeutrons.toInt().coerceAtMost(NeutronSSBO.MAX_NEUTRONS_CONST - count)
         if (offset >= 0) {
-            neutronSSBO.activateNeutrons(offset, count.coerceAtMost(NeutronSSBO.MAX_NEUTRONS_CONST - offset), cx, cy)
+            neutronSSBO.activateNeutrons(offset, count.coerceAtMost(NeutronSSBO.MAX_NEUTRONS_CONST - offset), worldX, worldY)
         }
     }
 
@@ -634,6 +670,8 @@ class AtomEngine {
     // ═══════════════════════════════════════════════════════════
 
     fun cleanup() {
+        geigerCounter.cleanup()
+
         imGuiGl3.dispose()
         imGuiGlfw.dispose()
         ImGui.destroyContext()
