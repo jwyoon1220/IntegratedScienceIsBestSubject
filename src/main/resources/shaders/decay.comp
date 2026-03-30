@@ -1,0 +1,104 @@
+#version 430 core
+
+// ============================================================
+//  decay.comp — Xenon Poisoning, Thermodynamics, and
+//               Radiation Diffusion
+// ============================================================
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+#define GRID_WIDTH  512
+#define GRID_HEIGHT 512
+
+struct Cell {
+    float u235_density;
+    float u238_density;
+    float pu239_density;
+    float u233_density;
+    float th232_density;
+    float xe135_density;
+    int   structure_type;
+    float radiation_dose;
+    float i135_density;
+    float temperature;
+    float thermal_conductivity;
+    float _pad;
+};
+
+layout(std430, binding = 1) buffer GridBuffer {
+    Cell cells[];
+};
+
+uniform float u_dt;
+
+// ── Helpers ─────────────────────────────────────────────────
+int idx(int cx, int cy) {
+    cx = clamp(cx, 0, GRID_WIDTH  - 1);
+    cy = clamp(cy, 0, GRID_HEIGHT - 1);
+    return cy * GRID_WIDTH + cx;
+}
+
+void main() {
+    int cx = int(gl_GlobalInvocationID.x);
+    int cy = int(gl_GlobalInvocationID.y);
+    if (cx >= GRID_WIDTH || cy >= GRID_HEIGHT) return;
+
+    int i = idx(cx, cy);
+    Cell c = cells[i];
+
+    // ── Xe-135 / I-135 Decay Kinetics ──────────────────────
+    // I-135 → Xe-135 conversion at 5% per second
+    float xe_from_i   = c.i135_density * 0.05 * u_dt;
+    xe_from_i         = max(0.0, min(xe_from_i, c.i135_density));
+
+    // Xe-135 natural decay at 1% per second
+    float xe_decay    = c.xe135_density * 0.01 * u_dt;
+    xe_decay          = max(0.0, min(xe_decay, c.xe135_density));
+
+    cells[i].i135_density   = max(0.0, c.i135_density  - xe_from_i);
+    cells[i].xe135_density  = max(0.0, c.xe135_density + xe_from_i - xe_decay);
+
+    // ── Thermal Conductivity per Material ───────────────────
+    float tc = 0.0;
+    switch (c.structure_type) {
+        case 1: tc = 0.60; break; // light water — good coolant
+        case 2: tc = 0.55; break; // heavy water
+        case 3: tc = 0.20; break; // graphite — retains heat
+        case 4: tc = 0.80; break; // control rod (metal)
+        case 5: tc = 0.70; break; // reflector (steel)
+        case 6: tc = 0.50; break; // wall
+        default: tc = 0.10; break;
+    }
+    cells[i].thermal_conductivity = tc;
+
+    // ── Heat Diffusion (4-neighbour Laplacian) ───────────────
+    float tUp    = cells[idx(cx, cy - 1)].temperature;
+    float tDown  = cells[idx(cx, cy + 1)].temperature;
+    float tLeft  = cells[idx(cx - 1, cy)].temperature;
+    float tRight = cells[idx(cx + 1, cy)].temperature;
+
+    float avgNeighbour = (tUp + tDown + tLeft + tRight) * 0.25;
+    float diffusion    = (avgNeighbour - c.temperature) * tc * u_dt;
+
+    // Ambient cooling towards 20 °C (room temperature)
+    float cooling      = (20.0 - c.temperature) * 0.005 * u_dt;
+
+    cells[i].temperature = c.temperature + diffusion + cooling;
+
+    // ── Radiation Diffusion (Gaussian-like 4-neighbour) ─────
+    float rUp    = cells[idx(cx, cy - 1)].radiation_dose;
+    float rDown  = cells[idx(cx, cy + 1)].radiation_dose;
+    float rLeft  = cells[idx(cx - 1, cy)].radiation_dose;
+    float rRight = cells[idx(cx + 1, cy)].radiation_dose;
+
+    // Spread 2% of radiation to neighbours (inverse-square approximated)
+    float spread = c.radiation_dose * 0.02 * u_dt;
+    cells[i].radiation_dose    = max(0.0, c.radiation_dose - spread * 4.0);
+    cells[idx(cx, cy - 1)].radiation_dose += spread;
+    cells[idx(cx, cy + 1)].radiation_dose += spread;
+    cells[idx(cx - 1, cy)].radiation_dose += spread;
+    cells[idx(cx + 1, cy)].radiation_dose += spread;
+
+    // Natural dose decay (biological clearance proxy) ~0.1% per second
+    cells[i].radiation_dose = max(0.0, cells[i].radiation_dose * (1.0 - 0.001 * u_dt));
+}

@@ -1,0 +1,273 @@
+#version 430 core
+
+// ============================================================
+//  physics.comp — GPU Nuclear Fission Physics Engine
+//  Handles: neutron movement, moderation, boundary collision,
+//           fission/absorption probability, xenon poisoning,
+//           heat generation, and mouse hover picking.
+// ============================================================
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+// ── Constants ───────────────────────────────────────────────
+#define MAX_NEUTRONS     500000u
+#define GRID_WIDTH       512
+#define GRID_HEIGHT      512
+#define THERMAL_ENERGY   15.0
+#define SPAWN_ENERGY     25.0
+
+// ── SSBO Structs ────────────────────────────────────────────
+struct Neutron {
+    vec2  position;   // world-space position (pixels)
+    vec2  velocity;   // pixels per second
+    float energy;     // MeV equivalent scale
+    int   isActive;   // 1 = alive, 0 = dead/idle
+};
+
+struct Cell {
+    float u235_density;
+    float u238_density;
+    float pu239_density;
+    float u233_density;
+    float th232_density;
+    float xe135_density;
+    int   structure_type; // 0=none,1=water,2=heavy water,3=graphite,4=ctrl rod,5=reflector,6=wall
+    float radiation_dose; // accumulated Sieverts
+    float i135_density;   // Iodine-135 precursor
+    float temperature;    // Celsius
+    float thermal_conductivity;
+    float _pad;           // std430 alignment padding
+};
+
+// ── Bindings ────────────────────────────────────────────────
+layout(std430, binding = 0) buffer NeutronBuffer {
+    Neutron neutrons[];
+};
+
+layout(std430, binding = 1) buffer GridBuffer {
+    Cell cells[];
+};
+
+layout(std430, binding = 2) buffer GlobalCounters {
+    uint active_neutron_count;
+    uint total_fission_events;
+    uint frame_seed;
+};
+
+layout(std430, binding = 3) buffer SelectionBuffer {
+    int hovered_neutron_index;
+    int min_distance_bits; // positive float bits — preserves order, safe for atomicMin
+};
+
+// ── Uniforms ────────────────────────────────────────────────
+uniform float u_dt;
+uniform vec2  u_world_size;   // (GRID_WIDTH * cell_px, GRID_HEIGHT * cell_px)
+uniform vec2  u_mouse_pos;    // world-space mouse position
+uniform float u_hover_radius; // hover pick radius in world units (default 4.0)
+uniform float u_critical_mass; // kg threshold for auto-ignition (default 50.0)
+
+// ── PCG Hash Random Number Generator ────────────────────────
+uint pcg_hash(uint seed) {
+    uint state = seed * 747796405u + 2891336453u;
+    uint word  = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+float random_float(inout uint seed) {
+    seed = pcg_hash(seed);
+    return float(seed) / 4294967296.0;
+}
+
+// ── Grid helpers ────────────────────────────────────────────
+int cellIndex(vec2 worldPos) {
+    float cellW = u_world_size.x / float(GRID_WIDTH);
+    float cellH = u_world_size.y / float(GRID_HEIGHT);
+    int cx = clamp(int(worldPos.x / cellW), 0, GRID_WIDTH  - 1);
+    int cy = clamp(int(worldPos.y / cellH), 0, GRID_HEIGHT - 1);
+    return cy * GRID_WIDTH + cx;
+}
+
+vec2 cellWorldCenter(int idx) {
+    float cellW = u_world_size.x / float(GRID_WIDTH);
+    float cellH = u_world_size.y / float(GRID_HEIGHT);
+    int cx = idx % GRID_WIDTH;
+    int cy = idx / GRID_WIDTH;
+    return vec2((float(cx) + 0.5) * cellW, (float(cy) + 0.5) * cellH);
+}
+
+// ── Spawn helper: activate a free slot for a new neutron ────
+void spawnNeutron(vec2 pos, vec2 vel, float energy) {
+    uint newIdx = atomicAdd(active_neutron_count, 1u);
+    if (newIdx < MAX_NEUTRONS) {
+        neutrons[newIdx].position  = pos;
+        neutrons[newIdx].velocity  = vel;
+        neutrons[newIdx].energy    = energy;
+        neutrons[newIdx].isActive  = 1;
+    }
+}
+
+// ── Main ────────────────────────────────────────────────────
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    if (index >= MAX_NEUTRONS) return;
+
+    // Only process active neutrons
+    if (neutrons[index].isActive == 0) return;
+
+    // Unique per-thread RNG seed
+    uint seed = index ^ frame_seed;
+
+    vec2  pos = neutrons[index].position;
+    vec2  vel = neutrons[index].velocity;
+    float eng = neutrons[index].energy;
+
+    // ── Step A: Movement & Moderation ───────────────────────
+    pos += vel * u_dt;
+
+    int cIdx = cellIndex(pos);
+    Cell c   = cells[cIdx];
+
+    // Moderator damping
+    float damp = 0.0;
+    if (c.structure_type == 1) damp = 0.025; // light water
+    if (c.structure_type == 2) damp = 0.015; // heavy water
+    if (c.structure_type == 3) damp = 0.010; // graphite
+
+    if (damp > 0.0) {
+        vel *= (1.0 - damp);
+        eng  = length(vel);
+    }
+
+    // ── Step B: Boundary & Structure Collision ───────────────
+    // World boundary bounce
+    if (pos.x < 0.0 || pos.x >= u_world_size.x) {
+        vel.x = -vel.x;
+        pos.x = clamp(pos.x, 0.0, u_world_size.x - 0.001);
+    }
+    if (pos.y < 0.0 || pos.y >= u_world_size.y) {
+        vel.y = -vel.y;
+        pos.y = clamp(pos.y, 0.0, u_world_size.y - 0.001);
+    }
+
+    // Structure interactions
+    if (c.structure_type == 6 || c.structure_type == 5) {
+        // Wall / reflector — reflect off the cell boundary normal
+        vec2 cellCtr = cellWorldCenter(cIdx);
+        vec2 diff    = pos - cellCtr;
+        vec2 normal  = (abs(diff.x) > abs(diff.y)) ? vec2(sign(diff.x), 0.0)
+                                                    : vec2(0.0, sign(diff.y));
+        vel = reflect(vel, normal);
+    } else if (c.structure_type == 4) {
+        // Control rod — absorb neutron
+        neutrons[index].isActive = 0;
+        return;
+    }
+
+    // ── Step C: Fission / Absorption Probability ────────────
+    bool isThermal = (eng < THERMAL_ENERGY);
+
+    // Xe-135 absorption (very high thermal cross-section)
+    if (isThermal && c.xe135_density > 0.0) {
+        float xe_prob = 0.99 * clamp(c.xe135_density, 0.0, 1.0);
+        if (random_float(seed) < xe_prob) {
+            neutrons[index].isActive = 0;
+            memoryBarrierBuffer(); // ensure the write is visible to subsequent passes
+            return;
+        }
+    }
+
+    // Fission probability per isotope
+    float fission_prob = 0.0;
+    float fuel_density = 0.0;
+
+    if (c.u235_density > 0.0) {
+        float p = isThermal ? 0.95 : 0.10;
+        fission_prob = max(fission_prob, p * clamp(c.u235_density / 10.0, 0.0, 1.0));
+        fuel_density += c.u235_density;
+    }
+    if (c.pu239_density > 0.0) {
+        float p = isThermal ? 0.90 : 0.25;
+        fission_prob = max(fission_prob, p * clamp(c.pu239_density / 10.0, 0.0, 1.0));
+        fuel_density += c.pu239_density;
+    }
+    if (c.u238_density > 0.0 && !isThermal) {
+        float p = 0.05;
+        fission_prob = max(fission_prob, p * clamp(c.u238_density / 10.0, 0.0, 1.0));
+        fuel_density += c.u238_density;
+    }
+
+    bool fissioned = false;
+    if (fission_prob > 0.0 && random_float(seed) < fission_prob) {
+        // ── Fission event! ───────────────────────────────────
+        neutrons[index].isActive = 0;
+        atomicAdd(total_fission_events, 1u);
+
+        // Spawn 2–3 fast neutrons
+        int spawnCount = (random_float(seed) < 0.5) ? 2 : 3;
+        for (int s = 0; s < spawnCount; s++) {
+            float angle = random_float(seed) * 6.28318530718;
+            float speed = 15.0 + random_float(seed) * 10.0;
+            vec2 newVel = vec2(cos(angle), sin(angle)) * speed;
+            spawnNeutron(pos, newVel, SPAWN_ENERGY);
+        }
+
+        // Decrease fuel density (consumed)
+        float consume = 0.001;
+        cells[cIdx].u235_density  = max(0.0, c.u235_density  - consume * c.u235_density);
+        cells[cIdx].pu239_density = max(0.0, c.pu239_density - consume * c.pu239_density);
+        cells[cIdx].u238_density  = max(0.0, c.u238_density  - consume * c.u238_density);
+
+        // Increase I-135 (fission product precursor for Xe-135)
+        cells[cIdx].i135_density += 1.0;
+
+        // Radiation dose spike
+        cells[cIdx].radiation_dose += 50.0;
+
+        // Heat generation
+        cells[cIdx].temperature += 500.0;
+
+        fissioned = true;
+    }
+
+    // ── Critical Mass Auto-Ignition Check ───────────────────
+    // Scan neighbourhood radius ~2 cells for accumulated fuel
+    if (!fissioned && random_float(seed) < 0.001) { // cheap stochastic check
+        float totalFuel = 0.0;
+        for (int dy = -2; dy <= 2; dy++) {
+            for (int dx = -2; dx <= 2; dx++) {
+                float cellW = u_world_size.x / float(GRID_WIDTH);
+                float cellH = u_world_size.y / float(GRID_HEIGHT);
+                int nx = clamp(int(pos.x / cellW) + dx, 0, GRID_WIDTH  - 1);
+                int ny = clamp(int(pos.y / cellH) + dy, 0, GRID_HEIGHT - 1);
+                int ni = ny * GRID_WIDTH + nx;
+                totalFuel += cells[ni].u235_density + cells[ni].pu239_density;
+            }
+        }
+        if (totalFuel >= u_critical_mass) {
+            // Spontaneous fission — kick-start chain reaction
+            float angle = random_float(seed) * 6.28318530718;
+            float speed = 15.0 + random_float(seed) * 10.0;
+            spawnNeutron(pos, vec2(cos(angle), sin(angle)) * speed, SPAWN_ENERGY);
+            cells[cIdx].temperature += 200.0;
+        }
+    }
+
+    // ── Mouse Hover Picking ──────────────────────────────────
+    float dist = length(pos - u_mouse_pos);
+    if (dist < u_hover_radius) {
+        // Positive floats preserve ordering when viewed as int bits,
+        // so atomicMin on int representation gives the minimum distance.
+        int distBits = floatBitsToInt(dist);
+        int prevBits = atomicMin(min_distance_bits, distBits);
+        if (prevBits > distBits) {
+            hovered_neutron_index = int(index);
+        }
+    }
+
+    // ── Write back ──────────────────────────────────────────
+    if (neutrons[index].isActive == 1) {
+        neutrons[index].position = pos;
+        neutrons[index].velocity = vel;
+        neutrons[index].energy   = eng;
+    }
+}
