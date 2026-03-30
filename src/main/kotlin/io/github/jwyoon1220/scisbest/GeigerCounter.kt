@@ -18,8 +18,8 @@ class GeigerCounter {
 
     companion object {
         private const val SAMPLE_RATE          = 44100
-        private const val CLICK_DURATION_MS    = 12          // 클릭 지속시간 (ms)
-        private val CLICK_DURATION_SAMPLES     = SAMPLE_RATE * CLICK_DURATION_MS / 1000  // 529 samples
+        private const val CLICK_DURATION_MS    = 20          // 클릭 지속시간 (ms)
+        private val CLICK_DURATION_SAMPLES     = SAMPLE_RATE * CLICK_DURATION_MS / 1000  // 882 samples
         private const val MAX_QUEUED_CLICKS    = 8
     }
 
@@ -94,14 +94,40 @@ class GeigerCounter {
     }
 
     // ── 클릭 파형 합성 ────────────────────────────────────────────
+    /**
+     * 실제 가이거-뮬러 튜브의 방전 소리를 모사하는 클릭 파형을 생성합니다.
+     * 순수 백색 잡음 대신:
+     *  1. 초기 날카로운 임펄스 (0~2ms) — 방전 트랜지언트
+     *  2. 감쇠 정현파 (~2.5kHz 링다운) — 튜브 공진
+     *  3. 짧은 잡음 꼬리 — 이온화 잔향
+     * 세 성분을 합산하여 훨씬 자연스러운 클릭 소리를 만듭니다.
+     */
     private fun generateClickSample(): ByteArray {
         val rng   = Random.Default
         val bytes = ByteArray(CLICK_DURATION_SAMPLES * 2)
+        val twoPi = 2.0 * kotlin.math.PI
+        // 링다운 주파수 — 2.2kHz: 귀에 거슬리지 않는 자연스러운 클릭 톤
+        val ringdownFrequencyHz = 2200.0
+
         for (i in 0 until CLICK_DURATION_SAMPLES) {
-            // 지수 감쇠 엔벨로프 * 백색 잡음 (가이거 계수기 클릭 모사)
-            val envelope = kotlin.math.exp(-i.toDouble() * 9.0 / CLICK_DURATION_SAMPLES).toFloat()
-            val noise    = (rng.nextFloat() * 2f - 1f) * envelope * 0.75f
-            val sample   = (noise * Short.MAX_VALUE).toInt()
+            val tSec  = i.toDouble() / SAMPLE_RATE  // 시간 (초)
+            val tMs   = tSec * 1000.0               // 시간 (ms)
+
+            // 1. 초기 임펄스: 아주 빠른 감쇠 (0~2ms 구간에서 빠르게 사라짐)
+            val impulse = kotlin.math.exp(-tMs * 4.5)
+
+            // 2. 감쇠 정현파 링다운 (방전 공진 모사)
+            val ringDecay = kotlin.math.exp(-tMs * 0.90)
+            val ring      = ringDecay * kotlin.math.sin(twoPi * ringdownFrequencyHz * tSec) * 0.65
+
+            // 3. 잡음 꼬리 (이온화 잔향) — 임펄스와 함께 빠르게 감쇠
+            val noiseAmp = kotlin.math.exp(-tMs * 2.5) * 0.30
+            val noise    = (rng.nextDouble() * 2.0 - 1.0) * noiseAmp
+
+            // 합산: 임펄스로 ring과 noise를 변조하고 전체 진폭 조정
+            val combined = (impulse * (ring + noise)).coerceIn(-1.0, 1.0) * 0.85
+
+            val sample = (combined * Short.MAX_VALUE).toInt()
                 .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
                 .toShort()
             bytes[i * 2]     = (sample.toInt() and 0xFF).toByte()

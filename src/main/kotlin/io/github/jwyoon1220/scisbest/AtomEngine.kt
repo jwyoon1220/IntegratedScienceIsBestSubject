@@ -170,12 +170,63 @@ class AtomEngine {
         val io: ImGuiIO = ImGui.getIO()
         io.addConfigFlags(ImGuiConfigFlags.NavEnableKeyboard)
         io.addConfigFlags(ImGuiConfigFlags.DockingEnable)
-        ImGui.styleColorsDark()
+
+        // ── 한글 폰트 로드 (NanumGothic) ──────────────────────────
+        val fontBytes = AtomEngine::class.java.getResourceAsStream("/fonts/NanumGothic.ttf")?.readBytes()
+        if (fontBytes != null) {
+            // Korean glyph ranges include basic Latin (0x0020-0x00FF) + Hangul
+            io.fonts.addFontFromMemoryTTF(fontBytes, 16f, io.fonts.getGlyphRangesKorean())
+        } else {
+            System.err.println("[AtomEngine] 경고: 한글 폰트(/fonts/NanumGothic.ttf)를 찾을 수 없습니다. 기본 폰트를 사용합니다.")
+            io.fonts.addFontDefault()
+        }
+
+        applyCustomStyle()
 
         imGuiGlfw = ImGuiImplGlfw()
         imGuiGlfw.init(windowHandle, true)
         imGuiGl3  = ImGuiImplGl3()
         imGuiGl3.init("#version 430 core")
+    }
+
+    /** 커스텀 ImGui 스타일 (어두운 청록색 테마) */
+    private fun applyCustomStyle() {
+        ImGui.styleColorsDark()
+        val style = ImGui.getStyle()
+
+        style.windowRounding    = 6f
+        style.frameRounding     = 4f
+        style.grabRounding      = 4f
+        style.popupRounding     = 4f
+        style.scrollbarRounding = 6f
+        style.tabRounding       = 4f
+
+        style.setWindowPadding(10f, 10f)
+        style.setFramePadding(6f, 4f)
+        style.setItemSpacing(8f, 6f)
+
+        // Accent: 청록색 계열
+        style.setColor(ImGuiCol.TitleBgActive,      0.10f, 0.35f, 0.45f, 1.00f)
+        style.setColor(ImGuiCol.TitleBg,            0.07f, 0.22f, 0.30f, 1.00f)
+        style.setColor(ImGuiCol.Header,             0.12f, 0.40f, 0.50f, 0.80f)
+        style.setColor(ImGuiCol.HeaderHovered,      0.15f, 0.50f, 0.62f, 1.00f)
+        style.setColor(ImGuiCol.HeaderActive,       0.18f, 0.58f, 0.72f, 1.00f)
+        style.setColor(ImGuiCol.Button,             0.10f, 0.35f, 0.45f, 1.00f)
+        style.setColor(ImGuiCol.ButtonHovered,      0.15f, 0.50f, 0.62f, 1.00f)
+        style.setColor(ImGuiCol.ButtonActive,       0.20f, 0.60f, 0.76f, 1.00f)
+        style.setColor(ImGuiCol.FrameBg,            0.05f, 0.15f, 0.20f, 1.00f)
+        style.setColor(ImGuiCol.FrameBgHovered,     0.08f, 0.24f, 0.32f, 1.00f)
+        style.setColor(ImGuiCol.FrameBgActive,      0.10f, 0.30f, 0.40f, 1.00f)
+        style.setColor(ImGuiCol.SliderGrab,         0.20f, 0.65f, 0.80f, 1.00f)
+        style.setColor(ImGuiCol.SliderGrabActive,   0.25f, 0.78f, 0.95f, 1.00f)
+        style.setColor(ImGuiCol.CheckMark,          0.20f, 0.78f, 0.95f, 1.00f)
+        style.setColor(ImGuiCol.PlotHistogram,      0.20f, 0.65f, 0.80f, 1.00f)
+        style.setColor(ImGuiCol.PlotHistogramHovered, 0.25f, 0.78f, 0.95f, 1.00f)
+        style.setColor(ImGuiCol.Tab,                0.07f, 0.22f, 0.30f, 1.00f)
+        style.setColor(ImGuiCol.TabHovered,         0.15f, 0.50f, 0.62f, 1.00f)
+        style.setColor(ImGuiCol.TabActive,          0.10f, 0.38f, 0.50f, 1.00f)
+        style.setColor(ImGuiCol.Separator,          0.20f, 0.55f, 0.65f, 0.60f)
+        style.setColor(ImGuiCol.WindowBg,           0.04f, 0.06f, 0.10f, 0.92f)
     }
 
     private fun initSSBOs() {
@@ -445,15 +496,20 @@ class AtomEngine {
     // ── Panel 1: Simulation Control ──────────────────────────
     private fun drawPanelSimControl() {
         ImGui.setNextWindowPos(10f, 10f, ImGuiCond.Once)
-        ImGui.setNextWindowSize(300f, 200f, ImGuiCond.Once)
+        ImGui.setNextWindowSize(300f, 195f, ImGuiCond.Once)
         if (ImGui.begin("시뮬레이션 제어")) {
-            if (ImGui.button(if (simPaused) "재개" else "일시정지", 120f, 0f)) {
-                simPaused = !simPaused
+            val buttonWidth    = 130f
+            val pauseResumeButtonLabel = if (simPaused) "▶  재개" else "⏸  일시정지"
+            if (simPaused) {
+                ImGui.pushStyleColor(ImGuiCol.Button,        0.15f, 0.55f, 0.20f, 1f)
+                ImGui.pushStyleColor(ImGuiCol.ButtonHovered, 0.20f, 0.70f, 0.25f, 1f)
+                ImGui.pushStyleColor(ImGuiCol.ButtonActive,  0.25f, 0.80f, 0.30f, 1f)
             }
+            if (ImGui.button(pauseResumeButtonLabel, buttonWidth, 0f)) simPaused = !simPaused
+            if (simPaused) ImGui.popStyleColor(3)
+
             ImGui.sameLine()
-            if (ImGui.button("전체 초기화", 120f, 0f)) {
-                // Neutron buffer is reset implicitly when counterSSBO is cleared:
-                // all neutron slots stay in memory; the GPU reads active_neutron_count = 0.
+            if (ImGui.button("↺  전체 초기화", buttonWidth, 0f)) {
                 gridSSBO.clearAll()
                 counterSSBO.resetCounters()
                 prevTotalFissions = 0L
@@ -462,13 +518,14 @@ class AtomEngine {
             }
 
             val ts = floatArrayOf(timeScale)
-            if (ImGui.sliderFloat("시간 배율", ts, 0.1f, 100f, "%.1fx")) {
-                timeScale = ts[0]
-            }
+            if (ImGui.sliderFloat("시간 배율", ts, 0.1f, 100f, "%.1fx")) timeScale = ts[0]
 
             val steps = kotlin.math.ceil(timeScale.toDouble()).toInt().coerceAtLeast(1)
-            ImGui.text("프레임당 하위 스텝: $steps")
-            ImGui.text("GPU 연산: %.2f ms".format(gpuTimeMs))
+            ImGui.textColored(0.65f, 0.85f, 1.00f, 1f, "하위 스텝: $steps  |  GPU: %.2f ms".format(gpuTimeMs))
+
+            // 상태 표시
+            if (simPaused) ImGui.textColored(1f, 0.8f, 0.2f, 1f, "● 일시정지")
+            else           ImGui.textColored(0.2f, 1f, 0.4f, 1f, "● 실행 중")
         }
         ImGui.end()
     }
@@ -515,21 +572,38 @@ class AtomEngine {
 
     private fun drawPanelAnalytics() {
         ImGui.setNextWindowPos(10f, 490f, ImGuiCond.Once)
-        ImGui.setNextWindowSize(300f, 250f, ImGuiCond.Once)
+        ImGui.setNextWindowSize(300f, 265f, ImGuiCond.Once)
         if (ImGui.begin("분석 및 센서")) {
-            ImGui.text("활성 중성자: %,d / %,d".format(activeNeutrons, NeutronSSBO.MAX_NEUTRONS_CONST))
-            ImGui.progressBar(activeNeutrons.toFloat() / NeutronSSBO.MAX_NEUTRONS_CONST, 280f, 0f)
+            // 중성자 수
+            val neutronFrac = activeNeutrons.toFloat() / NeutronSSBO.MAX_NEUTRONS_CONST
+            val (nr, ng, nb) = when {
+                neutronFrac > 0.80f -> Triple(1.00f, 0.30f, 0.20f)
+                neutronFrac > 0.50f -> Triple(1.00f, 0.75f, 0.10f)
+                else                -> Triple(0.70f, 1.00f, 0.70f)
+            }
+            ImGui.textColored(nr, ng, nb, 1f,
+                "중성자: %,d / %,d".format(activeNeutrons, NeutronSSBO.MAX_NEUTRONS_CONST))
+            ImGui.progressBar(neutronFrac, 280f, 10f, "")
 
-            ImGui.text("총 핵분열:   %,d".format(totalFissions))
+            ImGui.textColored(0.90f, 0.85f, 0.50f, 1f, "총 핵분열: %,d".format(totalFissions))
 
             ImGui.separator()
-            // ── 가이거 계수기 ────────────────────────────────────
-            val audioStr = if (geigerCounter.isAudioAvailable) "활성" else "비활성 (오디오 장치 없음)"
-            ImGui.text("가이거 계수기: $audioStr")
-            ImGui.text("이번 프레임 핵분열: %,d".format(frameFissions))
-            // 핵분열 속도에 따른 시각적 강도 표시
+            // ── 가이거 계수기 ──────────────────────────────────────
+            if (geigerCounter.isAudioAvailable) {
+                ImGui.textColored(0.40f, 1.00f, 0.50f, 1f, "가이거 계수기: 활성")
+            } else {
+                ImGui.textColored(0.60f, 0.60f, 0.60f, 1f, "가이거 계수기: 비활성 (오디오 없음)")
+            }
+
+            // 핵분열 속도 강도
             val intensity = (frameFissions.toFloat() / 500f).coerceIn(0f, 1f)
-            ImGui.progressBar(intensity, 280f, 12f, "")
+            val (fr, fg, fb) = when {
+                intensity > 0.75f -> Triple(1.0f, 0.25f, 0.10f)
+                intensity > 0.40f -> Triple(1.0f, 0.65f, 0.10f)
+                else              -> Triple(0.85f, 0.85f, 0.85f)
+            }
+            ImGui.textColored(fr, fg, fb, 1f, "프레임 핵분열: %,d".format(frameFissions))
+            ImGui.progressBar(intensity, 280f, 10f, "")
 
             ImGui.separator()
             val rm = intArrayOf(renderMode)
@@ -544,17 +618,23 @@ class AtomEngine {
     private fun drawDebugOverlay() {
         val pad = 10f
         ImGui.setNextWindowPos(windowWidth - 260f - pad, pad, ImGuiCond.Always)
-        ImGui.setNextWindowSize(260f, 150f, ImGuiCond.Always)
-        ImGui.setNextWindowBgAlpha(0.65f)
+        ImGui.setNextWindowSize(260f, 140f, ImGuiCond.Always)
+        ImGui.setNextWindowBgAlpha(0.70f)
         val flags = ImGuiWindowFlags.NoDecoration or ImGuiWindowFlags.NoInputs or
                     ImGuiWindowFlags.NoNav or ImGuiWindowFlags.NoMove
         if (ImGui.begin("##Debug", flags)) {
-            ImGui.text("FPS:        %.1f".format(fps))
-            ImGui.text("프레임 시간: %.2f ms".format(if (fps > 0) 1000f / fps else 0f))
-            ImGui.text("GPU 시간:   %.2f ms".format(gpuTimeMs))
-            ImGui.text("중성자:     %,d".format(activeNeutrons))
-            ImGui.text("핵분열:     %,d".format(totalFissions))
-            ImGui.text("시뮬 속도: %.1fx (%d 스텝)".format(
+            // FPS — 색상: 60+ 초록, 30-60 노랑, 30 미만 빨강
+            val (fr, fg, fb) = when {
+                fps >= 60f -> Triple(0.30f, 1.00f, 0.40f)
+                fps >= 30f -> Triple(1.00f, 0.80f, 0.20f)
+                else       -> Triple(1.00f, 0.35f, 0.20f)
+            }
+            ImGui.textColored(fr, fg, fb, 1f, "FPS: %.1f  (%.2f ms)".format(fps, if (fps > 0) 1000f / fps else 0f))
+            ImGui.textColored(0.65f, 0.85f, 1.00f, 1f, "GPU: %.2f ms".format(gpuTimeMs))
+            ImGui.separator()
+            ImGui.text("중성자: %,d".format(activeNeutrons))
+            ImGui.text("핵분열: %,d".format(totalFissions))
+            ImGui.text("속도:   %.1fx  (%d 스텝)".format(
                 timeScale, kotlin.math.ceil(timeScale.toDouble()).toInt()))
         }
         ImGui.end()
