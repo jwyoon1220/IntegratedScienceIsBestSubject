@@ -1,4 +1,4 @@
-package com.atomengine
+package io.github.jwyoon1220.scisbest
 
 /**
  * Application entry point.

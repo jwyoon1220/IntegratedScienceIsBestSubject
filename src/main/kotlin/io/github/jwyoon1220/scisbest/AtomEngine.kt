@@ -1,10 +1,11 @@
-package com.atomengine
+package io.github.jwyoon1220.scisbest
 
 import imgui.ImGui
 import imgui.ImGuiIO
 import imgui.flag.*
 import imgui.gl3.ImGuiImplGl3
 import imgui.glfw.ImGuiImplGlfw
+import imgui.type.ImInt
 import org.joml.Matrix4f
 import org.lwjgl.glfw.Callbacks.glfwFreeCallbacks
 import org.lwjgl.glfw.GLFW.*
@@ -323,11 +324,11 @@ class AtomEngine {
         neutronSSBO.bind()
 
         // Upload projection matrix
-        val matBuf = org.lwjgl.system.MemoryUtil.memAllocFloat(16)
+        val matBuf = memAllocFloat(16)
         projMatrix.get(matBuf)
         glUniformMatrix4fv(
             glGetUniformLocation(neutronProgram, "u_projection"), false, matBuf)
-        org.lwjgl.system.MemoryUtil.memFree(matBuf)
+        memFree(matBuf)
 
         glUniform1f(glGetUniformLocation(neutronProgram, "u_point_size"), 3f)
         glUniform1f(glGetUniformLocation(neutronProgram, "u_world_w"), worldWidth)
@@ -387,8 +388,8 @@ class AtomEngine {
         ImGui.setNextWindowPos(10f, 220f, ImGuiCond.Once)
         ImGui.setNextWindowSize(300f, 260f, ImGuiCond.Once)
         if (ImGui.begin("🏗 Environment Setup")) {
-            val bm = intArrayOf(brushMode)
-            if (ImGui.combo("Brush Mode", bm, brushLabels)) brushMode = bm[0]
+            val bm = ImInt(brushMode)
+            if (ImGui.combo("Brush Mode", bm, brushLabels)) brushMode = bm.get()
 
             val br = intArrayOf(brushRadius)
             if (ImGui.sliderInt("Brush Radius", br, 1, 30)) brushRadius = br[0]

@@ -1,4 +1,4 @@
-package com.atomengine
+package io.github.jwyoon1220.scisbest
 
 import org.lwjgl.opengl.GL43.*
 import org.lwjgl.system.MemoryUtil
@@ -62,30 +62,33 @@ class GridSSBO(val gridWidth: Int = 512, val gridHeight: Int = 512) {
         for (dy in 0 until h) {
             for (dx in 0 until w) {
                 val base = (dy * w + dx) * FLOATS
-                floatBuf[base + 0]  = u235
-                floatBuf[base + 1]  = u238
-                floatBuf[base + 2]  = pu239
-                floatBuf[base + 3]  = u233
-                floatBuf[base + 4]  = th232
-                floatBuf[base + 5]  = 0f         // xe135
-                floatBuf[base + 6]  = java.lang.Float.intBitsToFloat(structureType)
-                floatBuf[base + 7]  = 0f         // radiation_dose
-                floatBuf[base + 8]  = 0f         // i135
-                floatBuf[base + 9]  = temperature
-                floatBuf[base + 10] = 0.1f       // thermal_conductivity (default)
-                floatBuf[base + 11] = 0f         // pad
+                // 대괄호 대신 .put(index, value) 사용
+                floatBuf.put(base + 0, u235)
+                floatBuf.put(base + 1, u238)
+                floatBuf.put(base + 2, pu239)
+                floatBuf.put(base + 3, u233)
+                floatBuf.put(base + 4, th232)
+                floatBuf.put(base + 5, 0f)
+                floatBuf.put(base + 6, java.lang.Float.intBitsToFloat(structureType))
+                floatBuf.put(base + 7, 0f)
+                floatBuf.put(base + 8, 0f)
+                floatBuf.put(base + 9, temperature)
+                floatBuf.put(base + 10, 0.1f)
+                floatBuf.put(base + 11, 0f)
             }
         }
         floatBuf.rewind()
 
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo)
-        // Upload row by row to maintain correct stride in the 1D GPU buffer
         for (dy in 0 until h) {
-            val cy        = (cy0 + dy).coerceIn(0, gridHeight - 1)
-            val startCell = cy * gridWidth + cx0.coerceIn(0, gridWidth - 1)
-            // Position the buffer at this row's data
-            floatBuf.limit((dy + 1) * w * FLOATS)
+            val cy = (cy0 + dy).coerceIn(0, gridHeight - 1)
+            val cx = cx0.coerceIn(0, gridWidth - 1)
+            val startCell = cy * gridWidth + cx
+
             floatBuf.position(dy * w * FLOATS)
+            floatBuf.limit((dy + 1) * w * FLOATS)
+
+            // slice()를 사용하여 해당 행의 데이터만 전송
             glBufferSubData(
                 GL_SHADER_STORAGE_BUFFER,
                 startCell.toLong() * STRIDE_BYTES,
@@ -106,21 +109,23 @@ class GridSSBO(val gridWidth: Int = 512, val gridHeight: Int = 512) {
     )
 
     fun readCell(cx: Int, cy: Int): CellData {
-        val idx    = cy.coerceIn(0, gridHeight - 1) * gridWidth + cx.coerceIn(0, gridWidth - 1)
-        val buf    = MemoryUtil.memAllocFloat(FLOATS)
+        val idx = cy.coerceIn(0, gridHeight - 1) * gridWidth + cx.coerceIn(0, gridWidth - 1)
+        val buf = MemoryUtil.memAllocFloat(FLOATS)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo)
         glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, idx.toLong() * STRIDE_BYTES, buf)
+
+        // 읽기 시에도 buf[index] 대신 buf.get(index) 사용
         val data = CellData(
-            u235          = buf[0],
-            u238          = buf[1],
-            pu239         = buf[2],
-            u233          = buf[3],
-            th232         = buf[4],
-            xe135         = buf[5],
-            structureType = java.lang.Float.floatToRawIntBits(buf[6]),
-            radiationDose = buf[7],
-            i135          = buf[8],
-            temperature   = buf[9]
+            u235          = buf.get(0),
+            u238          = buf.get(1),
+            pu239         = buf.get(2),
+            u233          = buf.get(3),
+            th232         = buf.get(4),
+            xe135         = buf.get(5),
+            structureType = java.lang.Float.floatToRawIntBits(buf.get(6)),
+            radiationDose = buf.get(7),
+            i135          = buf.get(8),
+            temperature   = buf.get(9)
         )
         MemoryUtil.memFree(buf)
         return data

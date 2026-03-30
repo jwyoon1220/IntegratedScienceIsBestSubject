@@ -1,4 +1,4 @@
-package com.atomengine
+package io.github.jwyoon1220.scisbest
 
 import org.lwjgl.opengl.GL43.*
 import org.lwjgl.system.MemoryUtil

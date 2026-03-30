@@ -55,15 +55,10 @@ dependencies {
 application {
     mainClass.set("com.atomengine.MainKt")
     // Required for LWJGL on macOS
-    applicationDefaultJvmArgs = listOf("-XstartOnFirstThread")
 }
 
 tasks.withType<KotlinCompile> {
-    kotlinOptions.jvmTarget = "17"
-}
-
-tasks.withType<JavaExec> {
-    jvmArgs("-XstartOnFirstThread")
+    kotlinOptions.jvmTarget = "21"
 }
 
 // Fat JAR task for distribution

@@ -1,7 +1,8 @@
-package com.atomengine
+package io.github.jwyoon1220.scisbest
 
 import org.lwjgl.opengl.GL43.*
 import org.lwjgl.system.MemoryUtil
+import java.lang.Float
 import java.nio.ByteBuffer
 
 /**
@@ -18,7 +19,7 @@ class SelectionSSBO {
         const val STRIDE_BYTES = 8
         // Large sentinel distance so any real neutron distance wins atomicMin.
         // 9999 world units exceeds the maximum diagonal of the 1024×1024 world.
-        private val INIT_DIST_BITS = java.lang.Float.floatToRawIntBits(9999f)
+        private val INIT_DIST_BITS = Float.floatToRawIntBits(9999f)
     }
 
     private val ssbo: Int = glGenBuffers()

@@ -1,8 +1,9 @@
-package com.atomengine
+package io.github.jwyoon1220.scisbest
 
 import org.lwjgl.opengl.GL43.*
 import org.lwjgl.system.MemoryUtil
 import java.nio.ByteBuffer
+import java.util.Random
 
 /**
  * NeutronSSBO — manages the GPU buffer for 500,000 Neutron structs.
@@ -45,7 +46,7 @@ class NeutronSSBO(val maxNeutrons: Int = 500_000) {
      */
     fun activateNeutrons(offset: Int, count: Int, worldX: Float, worldY: Float, energy: Float = 25f) {
         val buf = MemoryUtil.memAllocFloat(count * (STRIDE_BYTES / 4))
-        val rng = java.util.Random()
+        val rng = Random()
         for (i in 0 until count) {
             val base = i * (STRIDE_BYTES / 4)
             val angle = (rng.nextFloat() * 2f * Math.PI).toFloat()
