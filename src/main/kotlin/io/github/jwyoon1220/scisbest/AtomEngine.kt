@@ -26,8 +26,12 @@ class AtomEngine {
 
     // ── Window / GL ──────────────────────────────────────────
     private var windowHandle: Long = NULL
-    private val windowWidth   = 1280
-    private val windowHeight  = 720
+    private var windowWidth   = 1280
+    private var windowHeight  = 720
+    private var isFullscreen  = false
+    // Saved windowed geometry for toggling back from fullscreen
+    private val savedWinPos  = IntArray(2)
+    private val savedWinSize = IntArray(2)
 
     // ── World dimensions (pixel units matching shader grid) ──
     private val worldWidth  = 512f * 2f   // 1024 world units
@@ -128,7 +132,7 @@ class AtomEngine {
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE)
         glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE)
         glfwWindowHint(GLFW_VISIBLE,   GLFW_FALSE)
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE)
+        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE)
 
         windowHandle = glfwCreateWindow(windowWidth, windowHeight,
             "핵분열 시뮬레이터", NULL, NULL)
@@ -146,7 +150,47 @@ class AtomEngine {
 
         glfwMakeContextCurrent(windowHandle)
         glfwSwapInterval(1)  // V-Sync ON by default
+
+        // Key callback: F11 toggles fullscreen, F4+Alt closes
+        glfwSetKeyCallback(windowHandle) { _, key, _, action, _ ->
+            if (action == GLFW_PRESS && key == GLFW_KEY_F11) toggleFullscreen()
+        }
+
+        // Framebuffer resize callback: update viewport and projection
+        glfwSetFramebufferSizeCallback(windowHandle) { _, w, h ->
+            windowWidth  = w
+            windowHeight = h
+            glViewport(0, 0, w, h)
+        }
+
         glfwShowWindow(windowHandle)
+    }
+
+    // ── Fullscreen toggle (F11) ──────────────────────────────
+    private fun toggleFullscreen() {
+        val monitor = glfwGetPrimaryMonitor()
+        val vidMode = glfwGetVideoMode(monitor) ?: return
+
+        if (!isFullscreen) {
+            // Save current windowed position and size
+            val px = IntArray(1); val py = IntArray(1)
+            glfwGetWindowPos(windowHandle, px, py)
+            savedWinPos[0] = px[0]; savedWinPos[1] = py[0]
+            val sw = IntArray(1); val sh = IntArray(1)
+            glfwGetWindowSize(windowHandle, sw, sh)
+            savedWinSize[0] = sw[0]; savedWinSize[1] = sh[0]
+            // Switch to fullscreen
+            glfwSetWindowMonitor(windowHandle, monitor,
+                0, 0, vidMode.width(), vidMode.height(), vidMode.refreshRate())
+        } else {
+            // Restore windowed
+            glfwSetWindowMonitor(windowHandle, NULL,
+                savedWinPos[0], savedWinPos[1],
+                savedWinSize[0].coerceAtLeast(1280),
+                savedWinSize[1].coerceAtLeast(720), 0)
+        }
+        isFullscreen = !isFullscreen
+        glfwSwapInterval(1)  // re-enable V-Sync after monitor switch
     }
 
     private fun initOpenGL() {
@@ -343,7 +387,7 @@ class AtomEngine {
                 frameCount  = 0
                 lastFpsTime = now
                 glfwSetWindowTitle(windowHandle,
-                    "핵분열 시뮬레이터  |  FPS: %.0f  |  중성자: %,d".format(fps, activeNeutrons))
+                    "핵분열 시뮬레이터  |  FPS: %.0f  |  중성자: %,d  |  F11=전체화면".format(fps, activeNeutrons))
             }
         }
     }

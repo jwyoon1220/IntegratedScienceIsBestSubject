@@ -10,7 +10,7 @@
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 // ── Constants ───────────────────────────────────────────────
-#define MAX_NEUTRONS     500000u
+#define MAX_NEUTRONS     2000000u
 #define GRID_WIDTH       512
 #define GRID_HEIGHT      512
 #define THERMAL_ENERGY   15.0
