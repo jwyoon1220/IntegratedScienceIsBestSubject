@@ -1017,12 +1017,14 @@ class StellarEngine {
                     val clip = Vector4f(bh.x, bh.y, bh.z, 1f)
                     projMatrix.transform(viewMatrix.transform(clip))
                     if (clip.w > 0f) {
-                        screenArr[idx * 2 + 0] = (clip.x / clip.w + 1f) * 0.5f * windowWidth
-                        screenArr[idx * 2 + 1] = (1f - clip.y / clip.w) * 0.5f * windowHeight
+                        // Shader expects UV [0..1] for u_bh_screen
+                        screenArr[idx * 2 + 0] = (clip.x / clip.w + 1f) * 0.5f
+                        screenArr[idx * 2 + 1] = (1f - clip.y / clip.w) * 0.5f
                     }
                     val dBH = sqrt((bh.x - eyeX).pow(2) + (bh.y - eyeY).pow(2) + (bh.z - eyeZ).pow(2))
                     val focal = 1f / tan(PI.toFloat() / 6f)
-                    rsArr[idx]   = if (dBH > 0f) focal * bh.radius / dBH * windowHeight * 0.5f else 50f
+                    // Shader expects u_bh_rs as a UV-space fraction (not pixels)
+                    rsArr[idx]   = if (dBH > 0f) focal * bh.radius / dBH * 0.5f else 0.05f
                     massArr[idx] = bh.mass.toFloat()
                 }
                 if (ppBHScreenLoc >= 0) glUniform2fv(ppBHScreenLoc, screenArr)

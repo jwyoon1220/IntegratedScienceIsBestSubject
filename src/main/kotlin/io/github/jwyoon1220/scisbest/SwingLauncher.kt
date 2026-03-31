@@ -47,8 +47,7 @@ object SwingLauncher {
 
         var chosen: SimMode? = null
 
-        val dialog = object : JDialog(null as Frame?, "핵물리 시뮬레이터", true) {
-        }
+        val dialog = JDialog(null as Frame?, "핵물리 시뮬레이터", true)
         dialog.isUndecorated = true
         dialog.background    = BG_DARK
         dialog.defaultCloseOperation = JDialog.DISPOSE_ON_CLOSE
