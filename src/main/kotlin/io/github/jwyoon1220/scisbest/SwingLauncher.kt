@@ -88,10 +88,7 @@ object SwingLauncher {
         val cardsPanel = JPanel(GridLayout(1, 2, 20, 0))
         cardsPanel.isOpaque = false
 
-        var fissionCard: ModeCard? = null
-        var fusionCard:  ModeCard? = null
-
-        fissionCard = ModeCard(
+        val fissionCard = ModeCard(
             icon       = "☢",
             title      = "핵분열 모드",
             subtitle   = "2D  |  GPU 가속",
@@ -104,7 +101,7 @@ object SwingLauncher {
             dialog.dispose()
         }
 
-        fusionCard = ModeCard(
+        val fusionCard = ModeCard(
             icon       = "✨",
             title      = "핵융합 / 별의 일생",
             subtitle   = "3D  |  관찰자 시점",

@@ -743,7 +743,6 @@ class StellarEngine {
                 StellarState.BLACK_HOLE -> {
                     b.temperature = 0f; b.luminosity = 0.0
                 }
-                else -> {}
             }
         }
 
@@ -1119,6 +1118,8 @@ class StellarEngine {
             ImGui.separator()
             ImGui.text("🌍 지구형 행성 감지!")
             val pArr = FloatArray(1) { b.earthBlueProgress }
+            @Suppress("UNUSED_VARIABLE")
+            val unused = pArr  // kept for potential future sliders
             ImGui.pushStyleColor(ImGuiCol.PlotHistogram, 0.1f, 0.4f, 0.8f, 1f)
             ImGui.progressBar(b.earthBlueProgress, 200f, 12f, "해양화 %.0f%%".format(b.earthBlueProgress * 100f))
             ImGui.popStyleColor()
