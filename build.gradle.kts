@@ -53,8 +53,12 @@ dependencies {
 }
 
 application {
-    mainClass.set("com.atomengine.MainKt")
+    mainClass.set("io.github.jwyoon1220.scisbest.MainKt")
     // Required for LWJGL on macOS
+    applicationDefaultJvmArgs = listOf(
+        "-XstartOnFirstThread",
+        "-Djava.awt.headless=false"
+    )
 }
 
 tasks.withType<KotlinCompile> {

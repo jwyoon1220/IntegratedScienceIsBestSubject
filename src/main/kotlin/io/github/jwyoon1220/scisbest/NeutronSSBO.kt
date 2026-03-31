@@ -16,12 +16,12 @@ import java.util.Random
  *   padding               offset 24  (8 bytes — vec2 alignment)
  * Total: 32 bytes
  */
-class NeutronSSBO(val maxNeutrons: Int = 500_000) {
+class NeutronSSBO(val maxNeutrons: Int = 2_000_000) {
 
     companion object {
         const val BINDING           = 0
         const val STRIDE_BYTES      = 32  // 2*vec2 + float + int + 8 pad
-        const val MAX_NEUTRONS_CONST = 500_000
+        const val MAX_NEUTRONS_CONST = 2_000_000
     }
 
     private val ssbo: Int = glGenBuffers()
